@@ -10,14 +10,14 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[repr(u8)]
 enum TdfType {
-    VarIntList = 0x0,
+    VarInt = 0x0,
     String = 0x1,
     Blob = 0x2,
     Group = 0x3,
     List = 0x4,
     Map = 0x5,
     Union = 0x6,
-    VarList = 0x7,
+    VarIntList = 0x7,
     Pair = 0x8,
     Tripple = 0x9,
     Float = 0xA,
@@ -55,60 +55,20 @@ impl From<usize> for VarInt {
     }
 }
 
+struct LabeledTdf(String, Tdf);
+
 enum Tdf {
-    VarInt {
-        label: String,
-        value: VarInt,
-    },
-    String {
-        label: String,
-        value: String,
-    },
-    Blob {
-        label: String,
-        value: Box<u8>,
-    },
-    Group {
-        label: String,
-        start2: bool,
-        values: Vec<Tdf>,
-    },
-    List {
-        label: String,
-        sub_type: SubDataType,
-        values: Vec<Tdf>,
-    },
-    Map {
-        label: String,
-        key_type: SubDataType,
-        value_type: SubDataType,
-        keys: Vec<MapKey>,
-        values: Vec<MapValue>,
-    },
-    Union {
-        label: String,
-        state: u8,
-        value: Option<Tdf>,
-    },
-    VarIntList {
-        label: String,
-        values: Vec<VarInt>,
-    },
-    Pair {
-        label: String,
-        a: VarInt,
-        b: VarInt,
-    },
-    Tripple {
-        label: String,
-        a: VarInt,
-        b: VarInt,
-        c: VarInt,
-    },
-    Float {
-        label: String,
-        value: f32,
-    },
+    VarInt(VarInt),
+    String(String),
+    Blob(Vec<u8>),
+    Group(bool, Vec<LabeledTdf>),
+    List(SubDataType, Vec<Tdf>),
+    Map(SubDataType, SubDataType, Vec<Tdf>, Vec<Tdf>),
+    Union(u8, Option<Tdf>),
+    VarIntList(Vec<VarInt>),
+    Pair(VarInt, VarInt),
+    Tripple(VarInt, VarInt, VarInt),
+    Float(f32),
 }
 
 trait Writeable: Send + Sync {
@@ -184,8 +144,7 @@ impl Writeable for String {
     }
 }
 
-
-impl Tdf {
+impl LabeledTdf {
     fn label_to_tag(label: &String) -> [u8; 3] {
         let mut res = [0u8; 3];
         let buff = label.as_bytes();
@@ -204,6 +163,7 @@ impl Tdf {
         res[2] |= ((buff[2] & 0x03) << 6);
         res[2] |= ((buff[3] & 0x40) >> 1);
         res[2] |= (buff[3] & 0x1F);
+
         return res;
     }
 
@@ -231,13 +191,29 @@ impl Tdf {
             .map(|v| if v == 0 { char::from(0x20) } else { char::from(*v) })
             .collect::<String>();
     }
+}
 
-    async fn write_head<W: AsyncWrite>(o: &mut W, label: &String, tdf_type: TdfType) -> io::Result<()> {
-        let tag = Tdf::label_to_tag(label);
-        o.write_u8((tag << 24) & 0xFF).await?;
-        o.write_u8((tag << 16) & 0xFF).await?;
-        o.write_u8((tag << 8) & 0xFF).await?;
+impl Writeable for LabeledTdf {
+    async fn write<W: AsyncWrite>(&self, o: &mut W) -> io::Result<()> {
+        let tdf_type = match self.1 {
+            Tdf::VarInt(_) => TdfType::VarInt,
+            Tdf::String(_) => TdfType::String,
+            Tdf::Blob(_) => TdfType::Blob,
+            Tdf::Group(_, _) => TdfType::Group,
+            Tdf::List(_, _) => TdfType::List,
+            Tdf::Map(_, _, _, _) => TdfType::Map,
+            Tdf::Union(_, _) => TdfType::Union,
+            Tdf::VarIntList(_) => TdfType::VarIntList,
+            Tdf::Pair(_, _) => TdfType::Pair,
+            Tdf::Tripple(_, _, _) => TdfType::Tripple,
+            Tdf::Float(_) => TdfType::Float
+        };
+        let tag = LabeledTdf::label_to_tag(label);
+        o.write_u8(tag[0]).await?;
+        o.write_u8(tag[1]).await?;
+        o.write_u8(tag[2]).await?;
         o.write_u8(tdf_type as u8).await?;
+        self.1.write(o).await?;
         Ok(())
     }
 }
@@ -245,39 +221,56 @@ impl Tdf {
 impl Writeable for Tdf {
     async fn write<W: AsyncWrite>(&self, o: &mut W) -> io::Result<()> {
         match self {
-            Tdf::VarInt { label, value } => {
-                Tdf::write_head(o, label, TdfType::VarIntList)
+            Tdf::VarInt(value) => value.write(o).await?,
+            Tdf::String(value) => value.write(o).await?,
+            Tdf::Blob(value)=> o.write_all(value).await?,
+            Tdf::Group(start2, values) => {
+                if start2 { o.write_u8(2).await?; }
+                for value in values {
+                    value.write(o).await?;
+                }
             }
-            Tdf::String { label, .. } => {
-                Tdf::write_head(o, label, TdfType::String)
+            Tdf::List(sub_type, values) => {
+                o.write_u8(sub_type as u8).await?;
+                VarInt::from(values.len()).write(o).await?;
+                values.iter()
+                    .for_each(|v| v.write(o, false));
             }
-            Tdf::Blob { label, .. } => {
-                Tdf::write_head(o, label, TdfType::Blob)
+            Tdf::Map(key_type, value_type, keys, values) => {
+                o.write_u8(key_type as u8).await?;
+                o.write_u8(value_type as u8).await?;
+                let length = keys.len();
+                for i in 0..(length - 1) {
+                    let key = keys.get(i).unwrap();
+                    let value = values.get(i).unwrap();
+                    key.write(o).await?;
+                    value.write(o).await?;
+                }
             }
-            Tdf::Group { label, .. } => {
-                Tdf::write_head(o, label, TdfType::Group)
+            Tdf::Union(data, value) => {
+                o.write_u8(*data).await?;
+                if data != 0x7F && value.is_some() {
+                    value.unwrap().write(o).await?;
+                }
             }
-            Tdf::List { label, .. } => {
-                Tdf::write_head(o, label, TdfType::List)
+            Tdf::VarIntList(values) => {
+                VarInt::from(values.len()).write(o).await?;
+                for value in values {
+                    value.write(o).await?;
+                }
             }
-            Tdf::Map { label, .. } => {
-                Tdf::write_head(o, label, TdfType::Map)
+            Tdf::Pair(a, b) => {
+                a.write(o).await?;
+                b.write(o).await?;
             }
-            Tdf::Union { label, .. } => {
-                Tdf::write_head(o, label, TdfType::Union)
+            Tdf::Tripple(a, b, c) => {
+                a.write(o).await?;
+                b.write(o).await?;
+                c.write(o).await?;
             }
-            Tdf::VarIntList { label, .. } => {
-                Tdf::write_head(o, label, TdfType::VarIntList)
-            }
-            Tdf::Pair { label, .. } => {
-                Tdf::write_head(o, label, TdfType::Pair)
-            }
-            Tdf::Tripple { label, .. } => {
-                Tdf::write_head(o, label, TdfType::Tripple)
-            }
-            Tdf::Float { label, .. } => {
-                Tdf::write_head(o, label, TdfType::Float)
-            }
+            Tdf::Float(value) => o.write_f32(*value).await?,
         }
+        Ok(())
     }
 }
+
