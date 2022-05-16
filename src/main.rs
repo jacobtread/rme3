@@ -1,6 +1,9 @@
+mod tdf;
+
 use std::fmt::format;
 use std::io;
 use std::net::SocketAddr;
+use tokio::io::AsyncWriteExt;
 
 use tokio::net::{TcpListener, TcpStream};
 
@@ -20,6 +23,7 @@ async fn main() -> io::Result<()> {
     }
 }
 
-async fn handle_client(stream: TcpStream, addr: SocketAddr) {
-    
+async fn handle_client(mut stream: TcpStream, addr: SocketAddr) {
+
+
 }
