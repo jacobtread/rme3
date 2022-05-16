@@ -32,7 +32,7 @@ enum MapKey {
 
 #[derive(PartialEq)]
 enum MapValue {
-    VarInt(u32),
+    VarInt(VarInt),
     String(String),
     Struct(Vec<Tdf>),
     Float(f32),
@@ -58,7 +58,7 @@ impl From<usize> for VarInt {
 enum Tdf {
     VarInt {
         label: String,
-        value: i64,
+        value: VarInt,
     },
     String {
         label: String,
@@ -92,18 +92,18 @@ enum Tdf {
     },
     VarIntList {
         label: String,
-        values: Vec<i64>,
+        values: Vec<VarInt>,
     },
     Pair {
         label: String,
-        a: i64,
-        b: i64,
+        a: VarInt,
+        b: VarInt,
     },
     Tripple {
         label: String,
-        a: i64,
-        b: i64,
-        c: i64,
+        a: VarInt,
+        b: VarInt,
+        c: VarInt,
     },
     Float {
         label: String,
