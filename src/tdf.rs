@@ -203,7 +203,7 @@ impl LabeledTdf {
         res[3] |= buff[2] & 0x1F;
 
         return res.iter()
-            .map(|v| if *v == 0 { char::from(0x20) } else { char::from(*v) })
+            .filter_map(|v| if *v == 0 { None } else { Some(char::from(*v)) })
             .collect::<String>();
     }
 }
