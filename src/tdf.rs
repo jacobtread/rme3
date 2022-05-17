@@ -67,7 +67,7 @@ impl From<usize> for VarInt {
 }
 
 #[derive(Clone, Debug)]
-pub struct LabeledTdf(pub String, pub Tdf);
+pub struct LabeledTdf(pub String, pub TdfType, pub Tdf);
 
 #[derive(Clone, Debug)]
 pub enum Tdf {
@@ -210,26 +210,12 @@ impl LabeledTdf {
 
 impl Writeable for LabeledTdf {
     fn write<W: Write>(&self, o: &mut W) -> io::Result<()> {
-        let tdf_type = match self.1 {
-            Tdf::VarInt(_) => TdfType::VarInt,
-            Tdf::String(_) => TdfType::String,
-            Tdf::Blob(_) => TdfType::Blob,
-            Tdf::Group(_, _) => TdfType::Group,
-            Tdf::List(_, _) => TdfType::List,
-            Tdf::Map(_, _, _, _) => TdfType::Map,
-            Tdf::Union(_, _) => TdfType::Union,
-            Tdf::VarIntList(_) => TdfType::VarIntList,
-            Tdf::Pair(_, _) => TdfType::Pair,
-            Tdf::Tripple(_, _, _) => TdfType::Tripple,
-            Tdf::Float(_) => TdfType::Float,
-            Tdf::Unknown => TdfType::Unknown(0)
-        };
         let tag = LabeledTdf::label_to_tag(&self.0);
         o.write_u8(tag[0])?;
         o.write_u8(tag[1])?;
         o.write_u8(tag[2])?;
-        o.write_u8(tdf_type.value())?;
-        self.1.write(o)?;
+        o.write_u8(self.1.value())?;
+        self.2.write(o)?;
         Ok(())
     }
 }
@@ -241,7 +227,7 @@ impl Readable for LabeledTdf {
         let label = LabeledTdf::tag_to_label(tag);
         let tdf_type = TdfType::from((head & 0xFF) as u8);
         let tdf = Tdf::read(r, &tdf_type)?;
-        Ok(LabeledTdf(label, tdf))
+        Ok(LabeledTdf(label, tdf_type, tdf))
     }
 }
 
@@ -306,6 +292,14 @@ impl Writeable for Tdf {
         }
         Ok(())
     }
+}
+
+type TdfResult<R> = Result<R, TdfError>;
+
+enum TdfError {
+    MissingLabel,
+    NotGroup,
+    InvalidType,
 }
 
 impl Tdf {
@@ -390,5 +384,22 @@ impl Tdf {
             }
             TdfType::Unknown(_) => Tdf::Unknown
         })
+    }
+
+    fn get_text(&self, label: &str) -> TdfResult<String> {
+        if let Tdf::Group(_, values) = self {
+            for value in values {
+                if value.0 == label {
+                    if let Tdf::String(text) = &value.1 {
+                        Ok(text.clone())
+                    } else {
+                        Err(TdfError::InvalidType)
+                    }
+                }
+            }
+            Err(TdfError::MissingLabel)
+        } else {
+            Err(TdfError::NotGroup)
+        }
     }
 }
