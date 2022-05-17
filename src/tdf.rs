@@ -2,27 +2,65 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::fs::read_to_string;
 use std::io;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::ops::Add;
 use std::string::FromUtf8Error;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
-#[repr(u8)]
+#[derive(Clone)]
 enum TdfType {
-    VarInt = 0x0,
-    String = 0x1,
-    Blob = 0x2,
-    Group = 0x3,
-    List = 0x4,
-    Map = 0x5,
-    Union = 0x6,
-    VarIntList = 0x7,
-    Pair = 0x8,
-    Tripple = 0x9,
-    Float = 0xA,
+    VarInt,
+    String,
+    Blob,
+    Group,
+    List,
+    Map,
+    Union,
+    VarIntList,
+    Pair,
+    Tripple,
+    Float,
+    Unknown(u8),
 }
 
+impl TdfType {
+    fn value(&self) -> u8 {
+        match self {
+            TdfType::VarInt => 0x0,
+            TdfType::String => 0x1,
+            TdfType::Blob => 0x2,
+            TdfType::Group => 0x3,
+            TdfType::List => 0x4,
+            TdfType::Map => 0x5,
+            TdfType::Union => 0x6,
+            TdfType::VarIntList => 0x7,
+            TdfType::Pair => 0x8,
+            TdfType::Tripple => 0x9,
+            TdfType::Float => 0xA,
+            TdfType::Unknown(value) => *value
+        }
+    }
+}
+
+impl From<u8> for TdfType {
+    fn from(value: u8) -> Self {
+        match value {
+            0x0 => TdfType::VarInt,
+            0x1 => TdfType::String,
+            0x2 => TdfType::Blob,
+            0x3 => TdfType::Group,
+            0x4 => TdfType::List,
+            0x5 => TdfType::Map,
+            0x6 => TdfType::Union,
+            0x7 => TdfType::VarIntList,
+            0x8 => TdfType::Pair,
+            0x9 => TdfType::Tripple,
+            0xA => TdfType::Float,
+            value => TdfType::Unknown(value),
+        }
+    }
+}
 
 enum MapKey {
     VarInt(u32),
@@ -36,28 +74,8 @@ enum MapValue {
     Float(f32),
 }
 
+
 #[derive(Clone)]
-enum SubDataType {
-    VarInt,
-    String,
-    Struct,
-    Tripple,
-    Float,
-}
-
-impl SubDataType {
-    fn value(&self) -> u8 {
-        match self {
-            SubDataType::VarInt => 0x0,
-            SubDataType::String => 0x1,
-            SubDataType::Struct => 0x3,
-            SubDataType::Tripple => 0x9,
-            SubDataType::Float => 0xA,
-        }
-    }
-}
-
-#[derive( Clone)]
 pub struct VarInt(pub i64);
 
 impl From<usize> for VarInt {
@@ -75,32 +93,13 @@ enum Tdf {
     String(String),
     Blob(Vec<u8>),
     Group(bool, Vec<LabeledTdf>),
-    List(SubDataType, Vec<Tdf>),
-    Map(SubDataType, SubDataType, Vec<Tdf>, Vec<Tdf>),
+    List(TdfType, Vec<Tdf>),
+    Map(TdfType, TdfType, Vec<Tdf>, Vec<Tdf>),
     Union(u8, Option<Box<Tdf>>),
     VarIntList(Vec<VarInt>),
     Pair(VarInt, VarInt),
     Tripple(VarInt, VarInt, VarInt),
     Float(f32),
-}
-
-impl Tdf {
-    fn read<R: Read>(r: &mut R, tdf_type: TdfType) -> io::Result<Self> {
-        match tdf_type {
-            TdfType::VarInt => {}
-            TdfType::String => {}
-            TdfType::Blob => {}
-            TdfType::Group => {}
-            TdfType::List => {}
-            TdfType::Map => {}
-            TdfType::Union => {}
-            TdfType::VarIntList => {}
-            TdfType::Pair => {}
-            TdfType::Tripple => {}
-            TdfType::Float => {}
-        }
-        Ok(Tdf::String(String::from("")))
-    }
 }
 
 
@@ -109,7 +108,7 @@ trait Writeable: Send + Sync {
 }
 
 trait Readable: Send + Sync {
-    fn read<R: Read>(r: &mut R) -> io::Result<Self> where Self: Sized;
+    fn read<R: Read + Seek>(r: &mut R) -> io::Result<Self> where Self: Sized;
 }
 
 impl Writeable for VarInt {
@@ -133,7 +132,7 @@ impl Writeable for VarInt {
 }
 
 impl Readable for VarInt {
-    fn read<R: Read>(r: &mut R) -> io::Result<VarInt> {
+    fn read<R: Read + Seek>(r: &mut R) -> io::Result<VarInt> {
         let first = r.read_u8()?;
         let mut shift = 6;
         let mut result = (first & 0x3F) as i64;
@@ -149,19 +148,6 @@ impl Readable for VarInt {
     }
 }
 
-impl Readable for String {
-    fn read<R: Read>(r: &mut R) -> io::Result<Self> {
-        let length = VarInt::read(r)?.0 as usize;
-        let mut bytes = vec![0u8; length - 1];
-        r.read_exact(&mut bytes)?;
-        r.read_u8()?;
-        match String::from_utf8(bytes) {
-            Ok(value) => Ok(value),
-            Err(_) => Err(io::Error::new(ErrorKind::InvalidData, "Invalid utf8 string"))
-        }
-    }
-}
-
 impl Writeable for String {
     fn write<W: Write>(&self, o: &mut W) -> io::Result<()> {
         let mut value = self.clone();
@@ -174,6 +160,19 @@ impl Writeable for String {
         VarInt::from(self.len()).write(o)?;
         o.write_all(self.as_bytes())?;
         Ok(())
+    }
+}
+
+impl Readable for String {
+    fn read<R: Read + Seek>(r: &mut R) -> io::Result<Self> {
+        let length = VarInt::read(r)?.0 as usize;
+        let mut bytes = vec![0u8; length - 1];
+        r.read_exact(&mut bytes)?;
+        r.read_u8()?;
+        match String::from_utf8(bytes) {
+            Ok(value) => Ok(value),
+            Err(_) => Err(io::Error::new(ErrorKind::InvalidData, "Invalid utf8 string"))
+        }
     }
 }
 
@@ -245,24 +244,33 @@ impl Writeable for LabeledTdf {
         o.write_u8(tag[0])?;
         o.write_u8(tag[1])?;
         o.write_u8(tag[2])?;
-        o.write_u8(tdf_type as u8)?;
+        o.write_u8(tdf_type.value())?;
         self.1.write(o)?;
         Ok(())
     }
 }
 
+impl Readable for LabeledTdf {
+    fn read<R: Read + Seek>(r: &mut R) -> io::Result<Self> where Self: Sized {
+        todo!()
+    }
+}
 
 impl Writeable for Tdf {
     fn write<W: Write>(&self, o: &mut W) -> io::Result<()> {
         match self {
             Tdf::VarInt(value) => value.write(o)?,
             Tdf::String(value) => value.write(o)?,
-            Tdf::Blob(value) => o.write_all(value)?,
+            Tdf::Blob(value) => {
+                VarInt::from(value.len()).write(o)?;
+                o.write_all(value)?;
+            }
             Tdf::Group(start2, values) => {
                 if *start2 { o.write_u8(2)?; }
                 for value in values {
                     value.write(o)?;
                 }
+                o.write_u8(0)?;
             }
             Tdf::List(sub_type, values) => {
                 o.write_u8(sub_type.value())?;
@@ -307,5 +315,52 @@ impl Writeable for Tdf {
             Tdf::Float(value) => o.write_f32::<BigEndian>(*value)?,
         }
         Ok(())
+    }
+}
+
+impl Tdf {
+    fn read<R: Read + Seek>(r: &mut R, tdf_type: &TdfType) -> io::Result<Self> {
+        Ok(match tdf_type {
+            TdfType::VarInt => Tdf::VarInt(VarInt::read(r)?),
+            TdfType::String => Tdf::String(String::read(r)?),
+            TdfType::Blob => {
+                let size = VarInt::read(r)?.0 as usize;
+                let mut bytes = vec![0u8; size];
+                r.read_exact(&mut bytes)?;
+                Tdf::Blob(bytes)
+            }
+            TdfType::Group => {
+                let mut first_two = false;
+                let mut values: Vec<LabeledTdf> = Vec::new();
+                'group: loop {
+                    let first = r.read_u8()?;
+                    if first == 0 {
+                        break 'group;
+                    } else if first == 2 {
+                        first_two = true;
+                    } else {
+                        r.seek(SeekFrom::Current(-1))?;
+                    }
+                    values.push(LabeledTdf::read(r)?);
+                };
+                Tdf::Group(first_two, values)
+            }
+            TdfType::List => {
+                let sub_type = TdfType::from(r.read_u8()?);
+                let length = VarInt::read(r)?.0 as usize;
+                let mut values = Vec::with_capacity(length);
+                for _ in 0..(length - 1) {
+                    values.push(Tdf::read(r, &sub_type)?);
+                }
+                Tdf::List(sub_type, values)
+            }
+            TdfType::Map => Tdf::Float(3.0),
+            TdfType::Union => Tdf::Float(3.0),
+            TdfType::VarIntList => Tdf::Float(3.0),
+            TdfType::Pair => Tdf::Float(3.0),
+            TdfType::Tripple => Tdf::Float(3.0),
+            TdfType::Float => Tdf::Float(3.0),
+            TdfType::Unknown(_) => Tdf::Float(3.0),
+        })
     }
 }
