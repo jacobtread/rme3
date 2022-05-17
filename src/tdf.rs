@@ -95,11 +95,12 @@ enum Tdf {
     Group(bool, Vec<LabeledTdf>),
     List(TdfType, Vec<Tdf>),
     Map(TdfType, TdfType, Vec<Tdf>, Vec<Tdf>),
-    Union(u8, Option<Box<Tdf>>),
+    Union(u8, Option<Box<LabeledTdf>>),
     VarIntList(Vec<VarInt>),
     Pair(VarInt, VarInt),
     Tripple(VarInt, VarInt, VarInt),
     Float(f32),
+    Unknown
 }
 
 
@@ -238,7 +239,8 @@ impl Writeable for LabeledTdf {
             Tdf::VarIntList(_) => TdfType::VarIntList,
             Tdf::Pair(_, _) => TdfType::Pair,
             Tdf::Tripple(_, _, _) => TdfType::Tripple,
-            Tdf::Float(_) => TdfType::Float
+            Tdf::Float(_) => TdfType::Float,
+            Tdf::Unknown => TdfType::Unknown(0)
         };
         let tag = LabeledTdf::label_to_tag(&self.0);
         o.write_u8(tag[0])?;
@@ -252,7 +254,12 @@ impl Writeable for LabeledTdf {
 
 impl Readable for LabeledTdf {
     fn read<R: Read + Seek>(r: &mut R) -> io::Result<Self> where Self: Sized {
-        todo!()
+        let head = r.read_u32::<BigEndian>()?;
+        let tag = head & 0xFFFFFF00;
+        let label = LabeledTdf::tag_to_label(tag);
+        let tdf_type = TdfType::from((head & 0xFF) as u8);
+        let tdf = Tdf::read(r, &tdf_type)?;
+        Ok(LabeledTdf(label, tdf))
     }
 }
 
@@ -313,6 +320,7 @@ impl Writeable for Tdf {
                 c.write(o)?;
             }
             Tdf::Float(value) => o.write_f32::<BigEndian>(*value)?,
+            Tdf::Unknown => {}
         }
         Ok(())
     }
@@ -354,13 +362,51 @@ impl Tdf {
                 }
                 Tdf::List(sub_type, values)
             }
-            TdfType::Map => Tdf::Float(3.0),
-            TdfType::Union => Tdf::Float(3.0),
-            TdfType::VarIntList => Tdf::Float(3.0),
-            TdfType::Pair => Tdf::Float(3.0),
-            TdfType::Tripple => Tdf::Float(3.0),
-            TdfType::Float => Tdf::Float(3.0),
-            TdfType::Unknown(_) => Tdf::Float(3.0),
+            TdfType::Map => {
+                let key_type = TdfType::from(r.read_u8()?);
+                let value_type = TdfType::from(r.read_u8()?);
+                let length = VarInt::read(r)?.0 as usize;
+                let mut keys = Vec::with_capacity(length);
+                let mut values = Vec::with_capacity(length);
+                for _ in 0..(length - 1) {
+                    keys.push(Tdf::read(r, &key_type)?);
+                    values.push(Tdf::read(r, &value_type)?);
+                }
+                Tdf::Map(key_type, value_type, keys, values)
+            }
+            TdfType::Union => {
+                let data = r.read_u8()?;
+                let value = if data != 0x7F {
+                    Some(Box::new(LabeledTdf::read(r)?))
+                } else {
+                    None
+                };
+                Tdf::Union(data, value)
+            }
+            TdfType::VarIntList => {
+                let length = VarInt::read(r)?.0 as usize;
+                let mut values = Vec::with_capacity(length);
+                for _ in 0..(length - 1) {
+                    values.push(VarInt::read(r)?);
+                }
+                Tdf::VarIntList(values)
+            }
+            TdfType::Pair => {
+                let a = VarInt::read(r)?;
+                let b = VarInt::read(r)?;
+                Tdf::Pair(a, b)
+            }
+            TdfType::Tripple => {
+                let a = VarInt::read(r)?;
+                let b = VarInt::read(r)?;
+                let c = VarInt::read(r)?;
+                Tdf::Tripple(a, b, c)
+            }
+            TdfType::Float => {
+                let value = r.read_f32::<BigEndian>()?;
+                Tdf::Float(value)
+            }
+            TdfType::Unknown(_) => Tdf::Unknown
         })
     }
 }
