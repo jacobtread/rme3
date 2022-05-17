@@ -1,15 +1,10 @@
-use std::any::Any;
-use std::collections::HashMap;
-use std::fs::read_to_string;
 use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
-use std::ops::Add;
-use std::string::FromUtf8Error;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
-#[derive(Clone)]
-enum TdfType {
+#[derive(Clone, Debug)]
+pub enum TdfType {
     VarInt,
     String,
     Blob,
@@ -62,20 +57,7 @@ impl From<u8> for TdfType {
     }
 }
 
-enum MapKey {
-    VarInt(u32),
-    String(String),
-}
-
-enum MapValue {
-    VarInt(VarInt),
-    String(String),
-    Struct(Vec<Tdf>),
-    Float(f32),
-}
-
-
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VarInt(pub i64);
 
 impl From<usize> for VarInt {
@@ -84,11 +66,11 @@ impl From<usize> for VarInt {
     }
 }
 
-#[derive(Clone)]
-struct LabeledTdf(String, Tdf);
+#[derive(Clone, Debug)]
+pub struct LabeledTdf(pub String, pub Tdf);
 
-#[derive(Clone)]
-enum Tdf {
+#[derive(Clone, Debug)]
+pub enum Tdf {
     VarInt(VarInt),
     String(String),
     Blob(Vec<u8>),
@@ -100,15 +82,15 @@ enum Tdf {
     Pair(VarInt, VarInt),
     Tripple(VarInt, VarInt, VarInt),
     Float(f32),
-    Unknown
+    Unknown,
 }
 
 
-trait Writeable: Send + Sync {
+pub trait Writeable: Send + Sync {
     fn write<W: Write>(&self, o: &mut W) -> io::Result<()>;
 }
 
-trait Readable: Send + Sync {
+pub trait Readable: Send + Sync {
     fn read<R: Read + Seek>(r: &mut R) -> io::Result<Self> where Self: Sized;
 }
 
@@ -181,27 +163,27 @@ impl LabeledTdf {
     fn label_to_tag(label: &String) -> [u8; 3] {
         let mut res = [0u8; 3];
         let buff = label.as_bytes();
-        res[0] |= ((buff[0] & 0x40) << 1);
-        res[0] |= ((buff[0] & 0x40) << 1);
-        res[0] |= ((buff[0] & 0x10) << 2);
-        res[0] |= ((buff[0] & 0x0F) << 2);
-        res[0] |= ((buff[1] & 0x40) >> 5);
-        res[0] |= ((buff[1] & 0x10) >> 4);
+        res[0] |= (buff[0] & 0x40) << 1;
+        res[0] |= (buff[0] & 0x40) << 1;
+        res[0] |= (buff[0] & 0x10) << 2;
+        res[0] |= (buff[0] & 0x0F) << 2;
+        res[0] |= (buff[1] & 0x40) >> 5;
+        res[0] |= (buff[1] & 0x10) >> 4;
 
-        res[1] |= ((buff[1] & 0x0F) << 4);
-        res[1] |= ((buff[2] & 0x40) >> 3);
-        res[1] |= ((buff[2] & 0x10) >> 2);
-        res[1] |= ((buff[2] & 0x0C) >> 2);
+        res[1] |= (buff[1] & 0x0F) << 4;
+        res[1] |= (buff[2] & 0x40) >> 3;
+        res[1] |= (buff[2] & 0x10) >> 2;
+        res[1] |= (buff[2] & 0x0C) >> 2;
 
-        res[2] |= ((buff[2] & 0x03) << 6);
-        res[2] |= ((buff[3] & 0x40) >> 1);
-        res[2] |= (buff[3] & 0x1F);
+        res[2] |= (buff[2] & 0x03) << 6;
+        res[2] |= (buff[3] & 0x40) >> 1;
+        res[2] |= buff[3] & 0x1F;
 
         return res;
     }
 
     fn tag_to_label(tag: u32) -> String {
-        let buff: [u8; 4] = tag.to_be_bytes();
+        let mut buff: [u8; 4] = tag.to_be_bytes();
         let mut res = [0u8; 4];
         res[0] |= (buff[0] & 0x80) >> 1;
         res[0] |= (buff[0] & 0x40) >> 2;
@@ -218,9 +200,9 @@ impl LabeledTdf {
         res[2] |= (buff[2] & 0xC0) >> 6;
 
         res[3] |= (buff[2] & 0x20) << 1;
-        res[3] |= (buff[2] & 0x1F);
+        res[3] |= buff[2] & 0x1F;
 
-        return buff.iter()
+        return res.iter()
             .map(|v| if *v == 0 { char::from(0x20) } else { char::from(*v) })
             .collect::<String>();
     }
